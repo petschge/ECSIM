@@ -1,0 +1,472 @@
+\documentclass[%
+%reprint,
+%superscriptaddress,
+%groupedaddress,
+%unsortedaddress,
+%runinaddress,
+%frontmatterverbose, 
+preprint,
+%preprintnumbers,
+%nofootinbib,
+%nobibnotes,
+%bibnotes,
+amsmath,amssymb,
+aps,
+%pra,
+%prb,
+%rmp,
+%prstab,
+%prstper,
+%floatfix,
+]{revtex4-2}
+
+\usepackage{subcaption} % for subfigures
+\usepackage{graphicx}% Include figure files
+\usepackage{dcolumn}% Align table columns on decimal point
+\usepackage{bm}% bold math
+\usepackage{placeins} % FloatBarrier
+\usepackage{xcolor} % For remarks between ourselves
+\usepackage{listings} % For source code and output
+
+%\usepackage{hyperref}% add hypertext capabilities
+%\usepackage[mathlines]{lineno}% Enable numbering of text and display math
+%\linenumbers\relax % Commence numbering lines
+
+%\usepackage[showframe,%Uncomment any one of the following lines to test 
+%%scale=0.7, marginratio={1:1, 2:3}, ignoreall,% default settings
+%%text={7in,10in},centering,
+%%margin=1.5in,
+%%total={6.5in,8.75in}, top=1.2in, left=0.9in, includefoot,
+%%height=10in,a5paper,hmargin={3cm,0.8in},
+%]{geometry}
+
+\begin{document}
+
+%\preprint{APS/123-QED}
+
+\title{Note on implementation of a semi-implicit, energy-conserving PIC}% Force line breaks with \\
+
+
+\author{Patrick Kilian}
+\affiliation{
+Space Science Institute
+}%
+
+
+\date{\today}% It is always \today, today,
+             %  but any date may be explicitly specified
+
+%\begin{abstract}
+%\end{abstract}
+
+%\keywords{Suggested keywords}%Use showkeys class option if keyword
+                              %display desired
+\maketitle
+
+\section{Introduction}
+
+This PiC code follow closely the reference in \cite{LAPENTA2017349}. The basic
+idea is to keep particle updates in position and velocity full explicit, but to
+include changes to the current from future fields. This leads to the
+requirements for deposition of mass matrices and for solving a matrix equation
+for the future fields, but no subcycling is necessary. The method conserves
+energy and can be used on cell sizes much larger than a Debye length since the
+Finite-Grid-Instability is removed.
+
+\section{Validation Tests}
+\subsection{Two-Stream Instability}
+
+This test follows the benchmark test described in \cite[section
+4.1]{LAPENTA2017349}.  Pick a reference density $n_0$ for normalization.
+Compute plasma frequency $\omega_{pe} = \sqrt{4\pi\,n_o\,e^2/m_e}$ and skin
+depth $d_e = c/\omega_{pe}$. The simulation domain is only resolved in one
+spatial dimension and is $L_x = 2\pi\,d_e$ long and resolved by $N_x = 64$
+cells. This implies $\Delta{x} = L_x/ N_x = \pi/32 d_e \approx .098 d_e$, or in
+terms of Debye length $\Delta{x} \approx 9.8 \lambda_D$. This resolution is
+borderline, but feasible with regular PiC codes.  We use a timestep of
+$\Delta{t} = 1/8 \omega_{pe}^{-1}$ and follow the system for $T = 125
+\omega_{pe}^{-1}$, which implies we perform $N_t = 1000$ time steps. The CFL
+condition number is given by $\mathcal{C} = c \Delta{t}/\Delta{x} = 1/8 c
+\omega_{pe}^{-1} / (\pi/32 c \omega_{pe}^{-1}) = 4/\pi \approx 1.27$. This is
+again borderline, it's possible in electrostatic explicit PiC codes
+($\mathcal{C} < \pi/2$), but not in (most) electromagnetic PiC codes.  Two
+electron populations of equal density $n_0/2$ are initialized with beam speeds
+$v_{beam,x} = \pm 0.2 c$, thermal spread $v_{th,e} = 0.01 c$ and a small
+perturbation $\delta{v} = 0.001 c$.
+
+We use exactly 154 particles per cell (following \cite{LAPENTA2017349}, even
+though 156 ppc would get us closer to $10^4$ particles in total) positioned at
+offsets that are distributed uniformly randomly in the cell for each particle
+in that cell.  Linear theory predicts (according to \cite{LAPENTA2017349}),
+that the fastest growing mode has $m = 3$ (corresponding to $k = 2\pi\,m/L_x$)
+and its growth rate is $\gamma = 0.35 \omega_{pe}$. And this is also the $m$
+that we pick for the small perturbations of particle velocities.  We do not set
+any background magnetic fields.
+
+Since this is an one dimensional electrostatic problem we can run this test
+case with all three different simulation codes:
+\begin{enumerate}
+    \item 1d1v phase space, only solving for $E_x$. $B_x$ is required to be
+    homogeneous due to the divergence constraint. It will remain unchanged in
+    time since there is no currents $j_{y,z}$ and it would only modify
+    $v_{y,z}$ and can hence be completely removed from the code.
+    \item 1d1v phase space, but retaining $E_x$ and $B_x$. $B_x$ of course
+    still needs to remain homogeneous and static, but we can check if the
+    Maxwell solver (the most complicated part of the algorithm) reproduces it,
+    instead of enforcing it be construction.
+    \item 1d3v phase space, retaining all six field components. Thermal
+    fluctuations in $v_{y,z}$ will produce transverse current and hence
+    transverse fields, but none of these fluctuations should have a strong
+    impact on the electrostatic instability. Late term behaviour might be
+    changed due to particles scattering of magnetic field fluctuations.
+\end{enumerate}
+
+To check the validity of the code we look at three diagnostics:
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/twostream/figure1_comp.pdf}
+    \caption{Growth of the electric energy in the three simulation, compared
+    against the analytic prediction of $\exp\left(2\gamma t\right)$. Compare
+    with \cite[Figure 1]{LAPENTA2017349}.}
+    \label{fig:twostream_fig1}
+\end{figure}
+
+In figure \ref{fig:twostream_fig1} we reproduce the first result figure of this
+plot in the reference paper and look at the growth of the electric field energy
+$\mathcal{E}_E = \sum_g (E_x^2 + E_y^2 + E_z^2) V_d / (8 \pi)$ as a function of
+time and compare against the analytic growth rate. Both 1d1v runs produce
+identical results to withing machine precision and are not distinguishable in
+the plot. The 1d3v run agrees on growth rate and saturation but shows somewhat
+different late time behaviour.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/twostream/figure2.pdf}
+    \caption{Change in total energy over the full simulation duration for all
+    three simulations. Compare with \cite[Figure 2]{LAPENTA2017349}.}
+    \label{fig:twostream_fig2}
+\end{figure}
+
+In figure \ref{fig:twostream_fig2} we reproduce the second result figure and
+check conservation of total energy. With carefully selected tolerances in the
+matrix solver we achieve $\left|E(t) - E_0\right| < 10^{-15} E_0$ for the
+duration of the simulation run. This is using a setting of \texttt{tol} =
+$10^{-6}/c$ and \texttt{atol} = $10^{-15}$ for nearly all timesteps,
+automatically falling back to \texttt{tol} = $10^{-5}/c$ or \texttt{tol} =
+$10^{-4}/c$ where GMRES fails to converge with this setting. Larger values for
+\texttt{tol} are possible, but relaxing \texttt{atol} leads to less stringent
+energy conservation.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/twostream/figure3.pdf}
+    \includegraphics[width=0.55\textwidth]{../tests/twostream/figure3b.pdf}
+    \caption{Fluctutations in total particle momentum (upper panel) and
+    numerical collision frequency (lower panel).}
+    \label{fig:twostream_fig3}
+\end{figure}
+
+We can also check the evolution of the total particle momentum, analogous to
+\cite[Fig. 3]{LAPENTA2017349}. Computation of $P_0 = \sum_i m_i v_{beam,x}$ and
+$P_x(t) = \sum_i m_i v_{i,x}$ is straight forward. Setting up an initial state
+with zero momentum is quite a bit harder. The particle number is so low, that
+generating $N_p$ independent normally distributed numbers will NOT sum to zero
+(or close) to it. Hence the generation of pair particles with anti-correlated
+thermal velocities described above. Using that we get the results in
+Fig.~\ref{fig:twostream_fig3} that compare favourably with the expected
+performance of the method.
+
+Computation of the effective numerical collision frequency $\nu(t) =
+\frac{\mathrm{d}\,P_x(t)}{\mathrm{d}t}\frac{1}{P_0}$ is also straight forward.
+Taking the RMS value of $\nu(t)$ over the entire duration of the simulation
+yields $\langle \nu \rangle = 1.2\cdot10^{-3}\omega_{pe}$. Restricting the time
+to $20 \omega_{pe}^{-1} < t 125 \omega_{pe}^{-1}$ increases the value slightly
+to $\langle \nu \rangle = 1.3\cdot10^{-3}\omega_{pe}$.
+
+More carefull particle initalization by creating pairs of particles with
+opposite $v_x$ to ensure $P_x(0) = 0$ would reduce the osciallations of
+momentum between particles and field and bring down the numerical
+collisionality.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.75\textwidth]{../tests/twostream/energy.png}
+    \caption{Energy breakdown of the 1d3v simulation. All of the energy is initially in kinetic energy of the streaming electrons. Some if it is transferred to $E_x$ by the instability. The other fields are transverse and only populated by fluctuation in the thermal velocities $v_y,z$ of the particles. They contain two (initially) to five (at the peak of the instability) order of magnitude less energy. $B_x$ stays uniformly and statically at $B_x = 0$ up to machine precision, as required by the divergence constraint.}
+    \label{fig:twostream_energy}
+\end{figure}
+
+The last result that we consider is the break down of energy into components in
+the 1d3v run, as shown in \ref{fig:twostream_energy}. Thermal fluctuations
+drive transverse fields that quickly reach a relatively steady level. These
+fields will be analyzed in more detail in \ref{subsec:wavemodes}.
+
+\FloatBarrier
+
+\subsection{Weibel Instabilty}
+
+This is a test of the transverse two-stream instability, which is closely
+related to the Weibel instability driven by temperature anisotropy.
+
+Pick a reference density $n_0$ for normalization. Compute the plasma frequency
+$\omega_{pe} = \sqrt{4\pi\,n_o\,e^2/m_e}$ and skin depth $d_e = c/\omega_{pe}$.
+The simulation domain is only resolved in one spatial dimension and is $L_x =
+2\pi\,d_e$ long and resolved by $N_x = 64$ cells. This implies $\Delta{x} =
+L_x/ N_x = \pi/32 d_e \approx .098 d_e$, or in terms of Debye length $\Delta{x}
+\approx 9.8 \lambda_D$. This resolution is borderline, but feasible with
+regular PiC codes.  We use a timestep of $\Delta{t} = 1/8 \omega_{pe}^{-1}$ and
+follow the system for $T = 125 \omega_{pe}^{-1}$, which implies we perform $N_t
+= 1000$ time steps. The CFL condition number is given by $\mathcal{C} = c
+\Delta{t}/\Delta{x} = 1/8 c \omega_{pe}^{-1} / (\pi/32 c \omega_{pe}^{-1}) =
+4/\pi \approx 1.27$. This is the same CFL condition number before, but this
+time in an electromagnetic instability. Expicit PiC codes would have a hard
+time with this.  Two electron populations of equal density $n_0/2$ are
+initialized with beam speeds $v_{beam,y} = \pm 0.8 c$ and thermal spread
+$v_{th,e} = 0.01 c$. Velocity of particle \texttt{i} is given by
+\begin{align*}
+    v_x[i] &= v_{th,e} * \mathcal{N}(0,1) \\
+    v_y[i] & = -1^i * v_{\mathrm{beam},y} + v_{th,e} * \mathcal{N}(0,1) \\
+    v_z[i] &= v_{th,e} * \mathcal{N}(0,1)
+\end{align*}
+We use 154 particles per cell (following \cite{LAPENTA2017349}, even though 156
+ppc would get us closer to $10^4$ particles in total).  The growth rate for
+this instability is given (in the fluid limit, see e.g.
+\url{https://en.wikipedia.org/wiki/Weibel_instability}) by
+\begin{equation*}
+    \frac{\gamma}{\omega_{pe}} =  \frac{v_0}{c} \sqrt{\frac{k^2 d_e^2}{1+k^2 d_2^2}}
+\end{equation*}
+For Fourier mode $m$ in a domain of length $L_x = 2\pi d_e$ that has $k_m =
+\frac{2\pi\,m}{L_x} = \frac{2\pi\,m}{2\pi\, d_e} = \frac{m}{d_e}$ we expect a
+growth rate of
+\begin{equation*}
+    \frac{\gamma}{\omega_{pe}} =  \frac{v_0}{c} \sqrt{\frac{m^2}{1+m^2}}
+\end{equation*}
+Energy growth of the different $m$ Fourier modes of $B_z$ are shown in
+\ref{fig:weibel_fig4} and match expected growth rates rather well. But for some
+reason $m=2$ is the most unstable mode and even seeding $m=3$ doesn't help.
+% I have tried perturbation of $v_y$, perturbations of $v_x$, perturbations in
+% the initial $B_z$ and perturbation of initial particle position $x_p$, all of
+% them following $\sin\left(2\pi\,x[i]/L_x\right)$. None of them makes $m=3$
+% the most unstable mode, in all cases $m=2$ is the saturating mode.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/weibel/figure1.png}
+    \caption{Compare with \cite[figure 4]{LAPENTA2017349}. For us $m=2$ dominates the dynamics, not $m=3$.}
+    \label{fig:weibel_fig4}
+\end{figure}
+
+However, conservation of total energy is great as displayed in Fig.~\ref{fig:weibel_fig5}.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/weibel/figure2.pdf}
+    \caption{Energy is conserved up to machine precission.}
+    \label{fig:weibel_fig5}
+\end{figure}
+
+\FloatBarrier
+
+\subsection{Finite-Grid-Instability}
+
+This is repeating the tests in \cite[Section 5]{LAPENTA2017349}. The paper
+states the domain length as $L = 2\pi\,\Xi$ which I take to mean $L_x =
+2\pi\,\Xi\,d_e$. This domain length is devided into $N_x = 64$ cells. The cell
+size is therefore $\Delta{x} = \frac{L_x}{N_x} = \frac{\pi\,\Xi}{32}d_e$. Given
+the thermal speed $v_{th} = 0.01 c$ we see that the Debye length is $\lambda_D
+= \frac{v_th}{\omega_{pe}} = \frac{1}{100}\frac{c}{\omega_{pe}} = \frac{1}{100}
+d_e$. So if we calculate the cell sizes as a multiple of the Debye length we
+find
+\begin{align}
+    \frac{\Delta{x}}{\lambda_D} &= \frac{L_x\,\omega_{pe}}{N_x\, v_{th}}\\
+        &= \frac{\omega_{pe}\,2\pi\,\Xi\,d_e}{64\, v_{th}} \label{eqn:sec5_paper_res} \\
+        &= \frac{200\pi\,\Xi}{64} \\
+        &= \frac{25\pi\,\Xi}{8} \\
+        &\approx 9.81 \Xi
+\end{align}
+Note that \cite{LAPENTA2017349} has an extra factor $L$ in
+Eq.~\eqref{eqn:sec5_paper_res}, probably a copy-and-paste mistake. Additionally
+$d_e$ is ommited. The paper then states that values of $\Xi \in [1,10^{15}]$
+are considered, making $\Delta{x}/\lambda_D \in [10,10^{16}]$ which seems close
+enough to what we get.
+
+For the timestep the paper states $\omega_{pe}\Delta{t} = .125\Xi$ which
+obviously implies $\Delta{t} = \frac{1}{8}\Xi\omega_{pe}^{-1}$. If I use that
+to compute the CFL number
+\begin{align}
+    \mathcal{C} = \frac{c\,\Delta{t}}{\Delta{x}} &= \frac{c\, \frac{1}{8}\Xi\omega_{pe}^{-1}}{\frac{\pi\,\Xi}{32}d_e} \\
+        & = \frac{4}{\pi} \\
+        & \approx 1.27
+\end{align}
+I get a value that is much larger than the quoted ``so that the CFL number is
+constant in all runs and equal to 0.0127''.  So potentially he is defining the
+CFL number with respect to the thermal speed (if we treat is as an
+electrostatic problem, there is no lightwaves). That would get us
+\begin{align}
+    \mathcal{C'} = \frac{v_{th}\,\Delta{t}}{\Delta{x}} &= \frac{\frac{1}{100}c\, \frac{1}{8}\Xi\omega_{pe}^{-1}}{\frac{\pi\,\Xi}{32}d_e} \\
+        & = \frac{4}{100\pi} \\
+        & \approx 0.0127
+\end{align}
+which would match the quoted text, but the paper is not clear in the definition
+of the CFL number and there is going to be a few percent of particles that go
+faster than $v_{th}$.
+
+The duration of the simulation runs is not reported, so I am picking the number
+of time steps to be $N_t = 1000$, which makes $T = 125\Xi\omega_{pe}^{-1}$.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/finite_grid/figure1_1d3v.pdf}
+    \caption{Performance for simulations using $\omega_{pe} \Delta{t} = 0.0125$ and various cell sizes $\Delta{x}/\lambda_D$.}
+    \label{fig:fgi_fig7}
+\end{figure}
+
+\FloatBarrier
+
+\subsection{Wave Modes}
+\label{subsec:wavemodes}
+These tests follow the setup described in \cite{kilian_2017}, with one exception: The resolved direction is $x$ instead of $z$.
+
+\subsubsection{Electromagnetic Mode}
+
+First we test the dispersion relation of (relatively) high-frequency modes in
+an unmagnetized plasma. The first one is the electromagnetic mode, analogous to
+\cite[Figure 3]{kilian_2017}. This is shown in Fig.~\ref{fig:waves_0B_B1}. We
+see that at large k the numerical dispersion is even large than in an explicit
+code with a regular Yee solver. This is not unexpected for an algorithm that
+colocated E fields at vertices and B fields at cell centers. But high $k$ is
+not the focus of the algorithm. This poor numerical dispersion would likely
+lead to problems with relativistic particles through the production of NCI, but
+the code is currently non-relativistic anyway.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run0_disp_E1_x.pdf}
+    \caption{Electromagnetic mode at large $k$ and $\omega$.}
+    \label{fig:waves_0B_B1}
+\end{figure}
+
+If we zoom in to lower $k$ and $\omega$ (as shown in
+Fig.~\ref{fig:waves_0B_E1}) we can identify the plasma frequency $w_{pe}$ at
+the correct value. This indicates that the normalization of current deposition,
+particle pusher and Maxwell solver is consistent. This figure is analogous to
+\cite[Figure 2]{kilian_2017}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run0_disp_E2_x.pdf}
+    \caption{Electromagnetic mode at smaller $k$ and $\omega$.}
+    \label{fig:waves_0B_E1}
+\end{figure}
+
+Electrostatic modes such as the Langmuir mode show the same plasma frequency
+and show an evolution with $k$ that shows that the particle thermal speed is
+correct in the code. This can be seen in Fig.~\ref{fig:waves_0B_E0} which is
+analogous to \cite[Figure 8]{kilian_2017}.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run1_disp_E0_x.pdf}
+    \caption{Electrostatic mode at smaller $k$ and $\omega$.}
+    \label{fig:waves_0B_E0}
+\end{figure}
+
+\FloatBarrier
+
+\subsubsection{High-frequency L- and R- mode}
+
+Adding a magnetic field along $x$ such that $\omega_{pe}/\Omega_{ce} = 2$ the
+electromagnetic mode splits into a left and right handed mode. This is shown in
+Fig.~\ref{fig:waves_Bx_E1}, the equivalent of \cite[Figure 5]{kilian_2017} and
+Fig.~\ref{fig:waves_Bx_Er}, the equivalent of \cite[Figure 6]{kilian_2017}.
+This test is important because it shows that the signs in $\alpha$ is correct
+and we are not accidentally using the transpose $\alpha^{T}$.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run2_disp_El_x.pdf}
+    \caption{Left-hand circular polarized electromagnetic modes.}
+    \label{fig:waves_Bx_E1}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run2_disp_Er_x.pdf}
+    \caption{Right-hand circular polarized electromagnetic modes.}
+    \label{fig:waves_Bx_Er}
+\end{figure}
+
+\FloatBarrier
+
+\subsubsection{Extraordinary mode}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run3_disp_E2_x.pdf}
+    \caption{Extraordinary electromagnetic mode at smaller $k$ and $\omega$.}
+    \label{fig:waves_By_E1}
+\end{figure}
+
+Rotating the magnetic field to point along $B_y$ allows us to benchmark the
+extraordinary (X) mode. Fig.~\ref{fig:waves_By_E1} is the equivalent of
+\cite[Figure 7]{kilian_2017}.
+
+\FloatBarrier
+
+\subsubsection{Electron Bernstein modes}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run3_disp_E0_x.pdf}
+    \caption{Electron Bernstein modes.}
+    \label{fig:waves_By_E0}
+\end{figure}
+
+Analyzing the longitudinal field in the same test clearly shows the electron
+Bernstein modes. These are shown in Fig.~\ref{fig:waves_By_E0} is the
+equivalent of \cite[Figure 11]{kilian_2017}.
+
+\FloatBarrier
+
+\subsubsection{Low-frequency R mode}
+
+In this test we start testing low-frequency modes that are expensive to
+simulate in explicit particle-in-cell codes. The domain length here is $L_x =
+8192$cm = 273$d_e$, but using only $N_x = 512$ cells instead of 8192 cells as
+in the reference paper. The simulation is run for $T = 966 \omega_{pe}^{-1}$
+but using only $N_t = 2560$. This makes this test acutally on of the cheaper
+steps in the wave modes validation test.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run4_disp_Er_x.pdf}
+    \caption{Right-hand circular polarized electromagnetic modes at small $k$ and $\omega$. This in particular includes Whistler waves.}
+    \label{fig:waves_Bx_Er_lf}
+\end{figure}
+
+\FloatBarrier
+
+\subsubsection{Low-frequency L mode}
+
+This test is using a larger domain of $L_x = 546\,d_e$ and using $N_x = 3415$
+(much less than the 16384 cells in the reference paper). The simulation covers
+$T = 4000 \omega_{pe}^{-1}$ but needs only $N_t = 3534$. To have a nice
+low-frequency mode that is left hand circular, this test requires the precence
+of a proton species. We use a reduced mass ratio $m_p / m_e = 18.36$ here,
+following the reference paper, but with this code much larger mass ratios would
+be feasible too.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.55\textwidth]{../tests/waves/run5_disp_El_x.pdf}
+    \caption{Left-hand circular polarized electromagnetic modes at small $k$ and $\omega$.}
+    \label{fig:waves_Bx_Er_vlf}
+\end{figure}
+
+\FloatBarrier
+
+\bibliography{main}% Produces the bibliography via BibTeX.
+
+\end{document}
+%
+
