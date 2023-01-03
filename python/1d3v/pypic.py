@@ -36,6 +36,7 @@ def str2bool(v):
 parser = argparse.ArgumentParser(description='Energy-Conserving Implicit PiC in 1d3v')
 parser.add_argument('--mime', dest='mime', action='store', default=18.362, type=float, help="Mass ratio m_i/m_e (default: %(default)s)")
 parser.add_argument('--vthe', dest='vthe', action='store', default=0.05, type=float, help="v_{th,e}/c (default: %(default)s)")
+parser.add_argument('--TiTe', dest='TiTe', action='store', default=1., type=float, help="T_i / T_e (default: %(default)s)")
 parser.add_argument('--wpe', dest='wpe', action='store', default=1e9, type=float, help="w_pe (default: %(default)s)")
 parser.add_argument('--vbeamx', dest='vbeamx', action='store', default=0.0, type=float, help="v_{beam,x}/c (default: %(default)s)")
 parser.add_argument('--vbeamy', dest='vbeamy', action='store', default=0.0, type=float, help="v_{beam,y}/c (default: %(default)s)")
@@ -1081,7 +1082,7 @@ if args.Nspecies > 0:
     electrons = Species("electron", -e, me,           macro, Np, vthe)
     species.append(electrons)
 if args.Nspecies > 1:
-    protons   = Species("proton",    e, args.mime*me, macro, Np, vthe/np.sqrt(args.mime))
+    protons   = Species("proton",    e, args.mime*me, macro, Np, vthe*np.sqrt(args.TiTe/args.mime))
     species.append(protons)
 if args.Nspecies > 2:
     sys.stderr.write("Please define what other species you want\n")
