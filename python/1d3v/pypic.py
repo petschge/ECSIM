@@ -60,6 +60,12 @@ parser.add_argument('--rescale_dt', dest='rescale_dt', action='store', default=1
 parser.add_argument('--outputsteps', dest='outputsteps', action='store', default=1, type=int, help="Timesteps between field outputs (default: %(default)s)")
 parser.add_argument('--particlesteps', dest='particlesteps', action='store', default=1000, type=int, help="Timesteps between particle outputs (default: %(default)s)")
 parser.add_argument('--notiming', dest='timing', action='store_false', help="Suppress timing info")
+parser.add_argument('--antenna_a0', dest='antenna_a0', action='store', default=0., type=float, help="strength of the driven current")
+parser.add_argument('--antenna_w0', dest='antenna_w0', action='store', default=0., type=float, help="Driving frequency of antenna")
+parser.add_argument('--antenna_delta_t', dest='antenna_delta_t', action='store', default=0., type=float, help="Duration of wave packet")
+parser.add_argument('--antenna_t0', dest='antenna_t0', action='store', default=0., type=float, help="when the envelope is max")
+parser.add_argument('--antenna_dw_dt', dest='antenna_dw_dt', action='store', default=0., type=float, help="frequency sweep rate")
+parser.add_argument('--antenna_delta_x', dest='antenna_delta_x', action='store', default=0., type=float, help="source region")
 
 args = parser.parse_args()
 
@@ -1076,6 +1082,42 @@ Nphys = ne * dx**3
 macro = Nphys / args.nppc
 sys.stderr.write("macro = "+str(macro)+"\n")
 
+if args.antenna_a0 > 0. and args.antenna_w0 > 0. and args.antenna_delta_t > 0. and args.antenna_t0 > 0. and args.antenna_delta_x > 0.:
+    # kmin resolved in the domain
+    kmin = 2.*np.pi / Lx
+    # desired k0
+    k0_prime = np.sqrt(args.antenna_w0/Wce) / de
+    # actual k0 such that it's an even number of kmin
+    args.antenna_k0 = int(0.5*k0_prime/kmin)*2*kmin
+    # actual w0 that matches that k0
+    args.antenna_w0 = (args.antenna_k0*de)**2 * Wce
+
+    sys.stderr.write("a0 = "+str(args.antenna_a0)+"not sure of the units\n")
+    sys.stderr.write("w0 = "+str(args.antenna_w0)+"rad/s\n")
+    sys.stderr.write("   = "+str(args.antenna_w0/args.wpe)+"wpe\n")
+    sys.stderr.write("   = "+str(args.antenna_w0/Wce)+"Wce\n")
+    sys.stderr.write("k0 = "+str(args.antenna_k0)+"m^-1\n")
+    sys.stderr.write("   = "+str(args.antenna_k0*dx)+"/dx\n")
+    sys.stderr.write("   = "+str(args.antenna_k0*de)+"/de\n")
+    sys.stderr.write("   = "+str(args.antenna_k0*Lx)+"/Lx\n")
+    sys.stderr.write("   = "+str(args.antenna_k0*dx/(2.*np.pi))+"*2pi/dx\n")
+    sys.stderr.write("   = "+str(args.antenna_k0*de/(2.*np.pi))+"*2pi/de\n")
+    sys.stderr.write("   = "+str(args.antenna_k0*Lx/(2.*np.pi))+"*2pi/Lx\n")
+    sys.stderr.write("delta_t = "+str(args.antenna_delta_t)+"Hz\n")
+    sys.stderr.write("        = "+str(args.antenna_delta_t*Wce)+"Wce^-1\n")
+    sys.stderr.write("        = "+str(args.antenna_delta_t*args.antenna_w0)+"w0^-1\n")
+    sys.stderr.write("        = "+str(args.antenna_delta_t*args.wpe)+"wpe^-1\n")
+    sys.stderr.write("t0 = "+str(args.antenna_t0)+"Hz\n")
+    sys.stderr.write("   = "+str(args.antenna_t0/args.antenna_delta_t)+"delta_t\n")
+    sys.stderr.write("   = "+str(args.antenna_t0*Wce)+"Wce^-1\n")
+    sys.stderr.write("   = "+str(args.antenna_t0*args.antenna_w0)+"w0^-1\n")
+    sys.stderr.write("   = "+str(args.antenna_t0*args.wpe)+"wpe^-1\n")
+    sys.stderr.write("dw/dt = "+str(args.antenna_dw_dt)+"rad/s^2\n")
+    sys.stderr.write("      = "+str(args.antenna_dw_dt*args.antenna_delta_t/args.antenna_w0)+"w0/delta_t\n")
+    sys.stderr.write("delta_x = "+str(args.antenna_delta_x)+"m\n")
+    sys.stderr.write("        = "+str(args.antenna_delta_x*args.antenna_k0)+"/k0\n")
+
+
 t=0
 
 Bx,By,Bz, Ex,Ey,Ez = init_fields(args.B0x,args.B0y,args.B0z)
@@ -1231,6 +1273,16 @@ for t in range(1,args.Nt+1):
         timers.tic('mass_matrix')
         naive_numba_mass_matrix(args.Nxouter, s.x, s.alpha, s.q, s.m, s.macro, M00,M01,M02,M10,M11,M12,M20,M21,M22)
         timers.toc('mass_matrix')
+
+    # add antenna current
+    if args.antenna_a0 > 0. and args.antenna_w0 > 0. and args.antenna_delta_t > 0. and args.antenna_t0 > 0. and args.antenna_delta_x > 0.:
+        At = args.antenna_a0 * np.exp(-(t*dt-args.antenna_t0)**2 / args.antenna_delta_t**2)
+        w = args.antenna_w0 + args.antenna_dw_dt*(t*dt - args.antenna_t0)
+        for i in range(Ng, Ng+args.Nxinner):
+            x = i*dx
+            Ax = np.exp(-(x-0.5*Lx)**2 / args.antenna_delta_x**2)
+            jy[i] += At*Ax * np.sin(args.antenna_k0*x - w*t*dt)
+            jz[i] += At*Ax * np.cos(args.antenna_k0*x - w*t*dt)
 
     # save total current
     if args.outputsteps > 0 and t%args.outputsteps == 0:

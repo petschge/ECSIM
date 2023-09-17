@@ -71,6 +71,11 @@ At a larger number of particles per cell which required comparable
 computational effort due to the faster particles pushes in VPIC, the heating
 rate in VPIC is lower thanin ECSIM.
 
+### Driven Whistler Wave
+
+This tests uses an antenna modelled as an externally imposed current to drive a
+whistler wave inside a thermal plasma.
+
 ### Acknowledgments
 
 The code was developed during a technology evaluation phase for a project sponsored by US National Science Foundation under award NSF-2031024.
