@@ -156,25 +156,25 @@ class Species:
 
         if args.vbeamx == 0. and args.vbeamy == 0. and args.vbeamz == 0.:
             # thermal plasma
-            self.vx = np.random.normal(scale=vthe, size=Np)
-            self.vy = np.random.normal(scale=vthe, size=Np)
-            self.vz = np.random.normal(scale=vthe, size=Np)
+            self.vx = np.random.normal(scale=vth, size=Np)
+            self.vy = np.random.normal(scale=vth, size=Np)
+            self.vz = np.random.normal(scale=vth, size=Np)
         elif args.vbeamx != 0. and args.vbeamy == 0. and args.vbeamz == 0.:
             # Two-stream instability
             self.vx = np.zeros(Np)
             Lx = args.Nxinner*dx
             for i in range(Np):
-                self.vx[i] = (-1.)**i * args.vbeamx*c + np.random.normal(scale=vthe, size=1) + args.deltav*c * np.sin(2.*np.pi*args.m*self.x[i]/Lx)
-            self.vy = np.random.normal(scale=vthe, size=Np)
-            self.vz = np.random.normal(scale=vthe, size=Np)
+                self.vx[i] = (-1.)**i * args.vbeamx*c + np.random.normal(scale=vth, size=1) + args.deltav*c * np.sin(2.*np.pi*args.m*self.x[i]/Lx)
+            self.vy = np.random.normal(scale=vth, size=Np)
+            self.vz = np.random.normal(scale=vth, size=Np)
         elif args.vbeamx == 0. and args.vbeamy != 0. and args.vbeamz == 0.:
             # Weibel instability
-            self.vx = np.random.normal(scale=vthe, size=Np)
+            self.vx = np.random.normal(scale=vth, size=Np)
             self.vy = np.zeros(Np)
             Lx = args.Nxinner*dx
             for i in range(Np):
-                self.vy[i] = (-1.)**i * args.vbeamy*c + np.random.normal(scale=vthe, size=1) + args.deltav*c * np.sin(2.*np.pi*args.m*self.x[i]/Lx)
-            self.vz = np.random.normal(scale=vthe, size=Np)
+                self.vy[i] = (-1.)**i * args.vbeamy*c + np.random.normal(scale=vth, size=1) + args.deltav*c * np.sin(2.*np.pi*args.m*self.x[i]/Lx)
+            self.vz = np.random.normal(scale=vth, size=Np)
         else:
             sys.stderr.write("This combination of beam velocities does not correspond to a known test problem.\n")
             sys.stderr.write("You will have to provide your own particle setup in "+sys.argv[0]+"\n")
@@ -1012,20 +1012,20 @@ TeeV = vthe**2*me/kBeV
 sys.stderr.write("   = "+str(TeeV)+"eV\n")
 
 lD = vthe/args.wpe
-sys.stderr.write("lD = "+str(lD)+"cm\n")
 de = c/args.wpe
+sys.stderr.write("lD = "+str(lD)+"cm\n")
+sys.stderr.write("   = "+str(lD/de)+"de\n")
 sys.stderr.write("de = "+str(de)+"cm\n")
 
-#dx = .66713366*lD
 dx = lD/args.rescale_dx
 sys.stderr.write("dx = "+str(dx)+"cm\n")
 sys.stderr.write("   = "+str(dx/lD)+"l_D\n")
 sys.stderr.write("   = "+str(dx/de)+"d_e\n")
 
-
-sys.stderr.write("Lx = "+str(dx*args.Nxinner)+"cm\n")
-sys.stderr.write("   = "+str(dx*args.Nxinner/lD)+"l_D\n")
-sys.stderr.write("   = "+str(dx*args.Nxinner/de)+"d_e\n")
+Lx = dx*args.Nxinner
+sys.stderr.write("Lx = "+str(Lx)+"cm\n")
+sys.stderr.write("   = "+str(Lx/lD)+"l_D\n")
+sys.stderr.write("   = "+str(Lx/de)+"d_e\n")
 
 B0 = np.sqrt(args.B0x**2 + args.B0y**2 + args.B0z**2)
 Wce = e*B0/(me*c)
@@ -1042,6 +1042,8 @@ sys.stderr.write("dt = "+str(dt)+"s\n")
 sys.stderr.write("wpe*dt = "+str((args.wpe*dt))+"\n")
 sys.stderr.write("Wce*dt = "+str((Wce*dt))+"\n")
 sys.stderr.write("c*dt/dx = "+str((c*dt/dx))+"\n")
+sys.stderr.write("wpe/Wce = "+str(args.wpe/Wce if Wce>0. else np.inf)+"\n")
+sys.stderr.write("beta_e = "+str(8.*np.pi*kB*Te/B0**2 if B0>0. else np.inf)+"\n")
 
 sys.stderr.write("T = "+str(dt*args.Nt)+"s\n")
 sys.stderr.write("  = "+str(dt*args.Nt*args.wpe)+"wpe^-1\n")
@@ -1057,7 +1059,7 @@ if args.Nspecies > 1:
     sys.stderr.write("Wci*dt = "+str((Wci*dt))+"\n")
     sys.stderr.write("di = "+str(di)+"cm\n")
     sys.stderr.write("dx = "+str(dx/di)+"d_i\n")
-    sys.stderr.write("Lx = "+str(dx*args.Nxinner/di)+"d_i\n")
+    sys.stderr.write("Lx = "+str(Lx/di)+"d_i\n")
 
     vA = B0/np.sqrt(4.*np.pi*ne*me*args.mime) if B0 > 0. else 0.
     sys.stderr.write("vA = "+str(vA)+" cm/s\n")

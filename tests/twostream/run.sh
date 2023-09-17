@@ -26,3 +26,4 @@ time ../../python/1d3v/pypic.py --mime 1836.2 --Nt 1000 --Nx 64 --nppc 154 --vth
 ./plot_fig1.gp
 ./plot_fig2.gp
 ./plot_fig3.gp
+./energy.gp
