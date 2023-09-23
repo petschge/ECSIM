@@ -2,6 +2,7 @@
 
 import numpy as np
 import sys
+from scipy.sparse import coo_array
 from scipy.sparse.linalg import gmres
 from timeit import default_timer as timer
 import h5py
@@ -496,30 +497,61 @@ def W_CIC_scalar_numba(xp, xg, deltayee):
     return w
 
 @njit
-def matrix_boundary(M):
+def matrix_boundary(lines, columns, values, Nxouter):
     """
     Move contribution that ended in any of the ghost zones off a matrix to the
     periodically wrapped interior of the domain
 
-    M: ndarray((Nxouter,Nxouter), float)
+    lines: array of indices i
+    columns: array of indicies j
+    values: array of non-zero entries M[i,j]
+    Nxouter: size of the square Nxouter x Nxouter matrix M
 
-    Returns: numpy array where ghost zones are zeroed out and contributions
-             moved to the interior
+    Returns: modified numpy arrays of lines, columns and values where ghost
+             zones are zeroed out and contributions moved to the interior
     """
-    M[-2*Ng: -Ng,:] += M[   :Ng,:]
-    M[   Ng:2*Ng,:] += M[-Ng:  ,:]
-    M[     :Ng  ,:]  = 0. * M[0,0]
-    M[  -Ng:    ,:]  = 0. * M[0,0]
 
-    M[:,-2*Ng: -Ng] += M[:,   :Ng]
-    M[:,   Ng:2*Ng] += M[:,-Ng:  ]
-    M[:,     :Ng  ]  = 0. * M[0,0]
-    M[:,  -Ng:    ]  = 0. * M[0,0]
+    for i,l in enumerate(lines):
+        if l < Ng:
+            lines[i] = Nxouter - 2*Ng + l
+        if l >= Nxouter - Ng:
+            lines[i] = l - Nxouter + 2*Ng
+    for j,c in enumerate(columns):
+        if c < Ng:
+            columns[j] = Nxouter - 2*Ng + c
+        if c >= Nxouter - Ng:
+            columns[j] = c - Nxouter + 2*Ng
 
-    return M
+    return lines,columns,values,Nxouter
 
 @njit
-def naive_numba_mass_matrix(Nx, x, alpha, q, m, macro, M00,M01,M02, M10,M11,M12, M20,M21,M22):
+def matrix_times_vector(lines, columns, values, Nx, vector):
+    """
+    Multiply a sparse matrix M with a vector and return a (dense) vector
+
+    lines: array of indices i
+    columns: array of indicies j
+    values: array of non-zero entries M[i,j]
+    Nx: size of the square Nx x Nx matrix M
+    vector: array with size Nx
+
+    Returns: return array of M@v
+    """
+    res = np.zeros(Nx, dtype=np.float64)
+    for (l,c,val) in zip(lines, columns, values):
+        res[int(l)] += val*vector[int(c)]
+    return res
+
+@njit
+def matrix_add(lines1, columns1, values1, lines2, columns2, values2):
+    lines   = np.concatenate((lines1, lines2))
+    columns = np.concatenate((columns1, columns2))
+    values  = np.concatenate((values1, values2))
+    return lines, columns, values
+
+
+@njit
+def naive_numba_mass_matrix(Nx, x, alpha, q, m, macro):
     """
     Compute mass matrices that contain the reaction of the magnetised plasma to
     the electric field
@@ -533,26 +565,16 @@ def naive_numba_mass_matrix(Nx, x, alpha, q, m, macro, M00,M01,M02, M10,M11,M12,
              entry are 1/seconds since we have to multiply an electric field in
              statV/cm and get a current in statC/cm^2/s
     """
-    #assert len(x) == Np
-    #assert alpha.shape[2] == Np
-    assert M00.shape[0] == Nx
-    assert M00.shape[1] == Nx
-    assert M01.shape[0] == Nx
-    assert M01.shape[1] == Nx
-    assert M02.shape[0] == Nx
-    assert M02.shape[1] == Nx
-    assert M10.shape[0] == Nx
-    assert M10.shape[1] == Nx
-    assert M11.shape[0] == Nx
-    assert M11.shape[1] == Nx
-    assert M12.shape[0] == Nx
-    assert M12.shape[1] == Nx
-    assert M20.shape[0] == Nx
-    assert M20.shape[1] == Nx
-    assert M21.shape[0] == Nx
-    assert M21.shape[1] == Nx
-    assert M22.shape[0] == Nx
-    assert M22.shape[1] == Nx
+    Mlines, Mcolumns = np.zeros(25*Nx, dtype=np.int64), np.zeros(25*Nx, dtype=np.int64)
+    M00values, M01values, M02values = np.zeros(25*Nx), np.zeros(25*Nx), np.zeros(25*Nx)
+    M10values, M11values, M12values = np.zeros(25*Nx), np.zeros(25*Nx), np.zeros(25*Nx)
+    M20values, M21values, M22values = np.zeros(25*Nx), np.zeros(25*Nx), np.zeros(25*Nx)
+    for cellx in range(-Ng, Nx-Ng):
+        for i in range(-2,3):
+            for j in range(-2,3):
+                idx = 25*(cellx+Ng) + 5*(i+2) + (j+2)
+                Mlines[idx]   = cellx+i
+                Mcolumns[idx] = cellx+j
 
     Vg = dx**3
     beta = (q*dt)/(2.*m*c) # dimension l^1/2 t m^-1/2
@@ -562,27 +584,39 @@ def naive_numba_mass_matrix(Nx, x, alpha, q, m, macro, M00,M01,M02, M10,M11,M12,
         for i in range(-2,3):
             for j in range(-2,3):
                 w = beta/Vg * q*macro*c * W_CIC_scalar_numba(x[p], cellx+i, 0.0) * W_CIC_scalar_numba(x[p], cellx+j, 0.0)
-                M00[cellx+i,cellx+j] += w * alpha[0,0,p]
-                M01[cellx+i,cellx+j] += w * alpha[0,1,p]
-                M02[cellx+i,cellx+j] += w * alpha[0,2,p]
-                M10[cellx+i,cellx+j] += w * alpha[1,0,p]
-                M11[cellx+i,cellx+j] += w * alpha[1,1,p]
-                M12[cellx+i,cellx+j] += w * alpha[1,2,p]
-                M20[cellx+i,cellx+j] += w * alpha[2,0,p]
-                M21[cellx+i,cellx+j] += w * alpha[2,1,p]
-                M22[cellx+i,cellx+j] += w * alpha[2,2,p]
 
-    M00 = matrix_boundary(M00)
-    M01 = matrix_boundary(M01)
-    M02 = matrix_boundary(M02)
-    M10 = matrix_boundary(M10)
-    M11 = matrix_boundary(M11)
-    M12 = matrix_boundary(M12)
-    M20 = matrix_boundary(M20)
-    M21 = matrix_boundary(M21)
-    M22 = matrix_boundary(M22)
+                idx = 25*(cellx+Ng) + 5*(i+2) + (j+2)
+                M00values[idx] += w * alpha[0,0,p]
+                M01values[idx] += w * alpha[0,1,p]
+                M02values[idx] += w * alpha[0,2,p]
+                M10values[idx] += w * alpha[1,0,p]
+                M11values[idx] += w * alpha[1,1,p]
+                M12values[idx] += w * alpha[1,2,p]
+                M20values[idx] += w * alpha[2,0,p]
+                M21values[idx] += w * alpha[2,1,p]
+                M22values[idx] += w * alpha[2,2,p]
 
-    #return M00,M01,M02,M10,M11,M12,M20,M21,M22
+    # would be nice to form coo_array's here, but then numba runs into type issues
+    M00lines, M00columns, M00values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M00values, Nx)
+    M01lines, M01columns, M01values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M01values, Nx)
+    M02lines, M02columns, M02values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M02values, Nx)
+    M10lines, M10columns, M10values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M10values, Nx)
+    M11lines, M11columns, M11values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M11values, Nx)
+    M12lines, M12columns, M12values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M12values, Nx)
+    M20lines, M20columns, M20values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M20values, Nx)
+    M21lines, M21columns, M21values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M21values, Nx)
+    M22lines, M22columns, M22values, _ = matrix_boundary(np.copy(Mlines), np.copy(Mcolumns), M22values, Nx)
+
+    return M00lines,M00columns,M00values, \
+           M01lines,M01columns,M01values, \
+           M02lines,M02columns,M02values, \
+           M10lines,M10columns,M10values, \
+           M11lines,M11columns,M11values, \
+           M12lines,M12columns,M12values, \
+           M20lines,M20columns,M20values, \
+           M21lines,M21columns,M21values, \
+           M22lines,M22columns,M22values
+
 
 def init_fields(B0x,B0y,B0z):
     """
@@ -703,7 +737,90 @@ def ES_field(phi):
     Ex = field_boundary(Ex)
     return Ex
 
-def maxwell(Ex,Ey,Ez, Bx,By,Bz, jhatx,jhaty,jhatz, M00,M01,M02,M10,M11,M12,M20,M21,M22, theta):
+@njit
+def build_A(Nx, \
+    M00lines,M00columns,M00values, M01lines,M01columns,M01values, M02lines,M02columns,M02values, \
+    M10lines,M10columns,M10values, M11lines,M11columns,M11values, M12lines,M12columns,M12values, \
+    M20lines,M20columns,M20values, M21lines,M21columns,M21values, M22lines,M22columns,M22values, \
+    theta):
+    Alines = []; Acolumns = []; Avalues = []
+
+    for i in range(len(M00lines)):
+        if Ng <= M00lines[i] < Nx+Ng and Ng <= M00columns[i] < Nx+Ng:
+            Alines.append(0*Nx+M00lines[i]-Ng); Acolumns.append(0*Nx+M00columns[i]-Ng); Avalues.append(-1. * M00values[i] * 4*np.pi/c * theta)
+    for i in range(len(M01lines)):
+        if Ng <= M01lines[i] < Nx+Ng and Ng <= M01columns[i] < Nx+Ng:
+            Alines.append(0*Nx+M01lines[i]-Ng); Acolumns.append(1*Nx+M01columns[i]-Ng); Avalues.append(-1. * M01values[i] * 4*np.pi/c * theta)
+    for i in range(len(M02lines)):
+        if Ng <= M02lines[i] < Nx+Ng and Ng <= M02columns[i] < Nx+Ng:
+            Alines.append(0*Nx+M02lines[i]-Ng); Acolumns.append(2*Nx+M02columns[i]-Ng); Avalues.append(-1. * M02values[i] * 4*np.pi/c * theta)
+    for m in range(0*Nx,1*Nx):
+        i = m - 0*Nx
+        Alines.append(m); Acolumns.append(i); Avalues.append(-1./(c*dt))
+
+    for i in range(len(M10lines)):
+        if Ng <= M10lines[i] < Nx+Ng and Ng <= M10columns[i] < Nx+Ng:
+            Alines.append(1*Nx+M10lines[i]-Ng); Acolumns.append(0*Nx+M10columns[i]-Ng); Avalues.append(-1. * M10values[i] * 4*np.pi/c * theta)
+    for i in range(len(M11lines)):
+        if Ng <= M11lines[i] < Nx+Ng and Ng <= M11columns[i] < Nx+Ng:
+            Alines.append(1*Nx+M11lines[i]-Ng); Acolumns.append(1*Nx+M11columns[i]-Ng); Avalues.append(-1. * M11values[i] * 4*np.pi/c * theta)
+    for i in range(len(M12lines)):
+        if Ng <= M12lines[i] < Nx+Ng and Ng <= M12columns[i] < Nx+Ng:
+            Alines.append(1*Nx+M12lines[i]-Ng); Acolumns.append(2*Nx+M12columns[i]-Ng); Avalues.append(-1. * M12values[i] * 4*np.pi/c * theta)
+    for m in range(1*Nx,2*Nx):
+        i = m - 1*Nx
+        iprev = i-1
+        if iprev < 0:
+            iprev += Nx
+        Alines.append(m); Acolumns.append(5*Nx+i    ); Avalues.append(-theta/dx  )
+        Alines.append(m); Acolumns.append(5*Nx+iprev); Avalues.append( theta/dx  )
+        Alines.append(m); Acolumns.append(  Nx+i    ); Avalues.append( -1./(c*dt))
+
+    for i in range(len(M20lines)):
+        if Ng <= M20lines[i] < Nx+Ng and Ng <= M20columns[i] < Nx+Ng:
+            Alines.append(2*Nx+M20lines[i]-Ng); Acolumns.append(0*Nx+M20columns[i]-Ng); Avalues.append(-1. * M20values[i] * 4*np.pi/c * theta)
+    for i in range(len(M21lines)):
+        if Ng <= M21lines[i] < Nx+Ng and Ng <= M21columns[i] < Nx+Ng:
+            Alines.append(2*Nx+M21lines[i]-Ng); Acolumns.append(1*Nx+M21columns[i]-Ng); Avalues.append(-1. * M21values[i] * 4*np.pi/c * theta)
+    for i in range(len(M22lines)):
+        if Ng <= M22lines[i] < Nx+Ng and Ng <= M22columns[i] < Nx+Ng:
+            Alines.append(2*Nx+M22lines[i]-Ng); Acolumns.append(2*Nx+M22columns[i]-Ng); Avalues.append(-1. * M22values[i] * 4*np.pi/c * theta)
+    for m in range(2*Nx,3*Nx):
+        i = m - 2*Nx
+        iprev = i-1
+        if iprev < 0:
+            iprev += Nx
+        Alines.append(m); Acolumns.append(4*Nx+i    ); Avalues.append( theta/dx  )
+        Alines.append(m); Acolumns.append(4*Nx+iprev); Avalues.append(-theta/dx  )
+        Alines.append(m); Acolumns.append(2*Nx+i    ); Avalues.append( -1./(c*dt))
+
+    for m in range(3*Nx,4*Nx):
+        i = m - 3*Nx
+        Alines.append(m); Acolumns.append(3*Nx+i    ); Avalues.append(1./(c*dt))
+    for m in range(4*Nx,5*Nx):
+        i = m - 4*Nx
+        inext = i+1
+        if inext >= Nx:
+            inext -= Nx
+        Alines.append(m); Acolumns.append(2*Nx+inext); Avalues.append(-theta/dx  )
+        Alines.append(m); Acolumns.append(2*Nx+i    ); Avalues.append( theta/dx  )
+        Alines.append(m); Acolumns.append(4*Nx+i    ); Avalues.append(  1./(c*dt))
+    for m in range(5*Nx,6*Nx):
+        i = m - 5*Nx
+        inext = i+1
+        if inext >= Nx:
+            inext -= Nx
+        Alines.append(m); Acolumns.append(  Nx+inext); Avalues.append( theta/dx  )
+        Alines.append(m); Acolumns.append(  Nx+i    ); Avalues.append(-theta/dx  )
+        Alines.append(m); Acolumns.append(5*Nx+i    ); Avalues.append(  1./(c*dt))
+
+    return Alines, Acolumns, Avalues
+
+def maxwell(Ex,Ey,Ez, Bx,By,Bz, jhatx,jhaty,jhatz, \
+        M00lines,M00columns,M00values, M01lines,M01columns,M01values, M02lines,M02columns,M02values, \
+        M10lines,M10columns,M10values, M11lines,M11columns,M11values, M12lines,M12columns,M12values, \
+        M20lines,M20columns,M20values, M21lines,M21columns,M21values, M22lines,M22columns,M22values, \
+        theta):
     """
     Solve linear problem to get updated electric and magnetic field
 
@@ -728,24 +845,6 @@ def maxwell(Ex,Ey,Ez, Bx,By,Bz, jhatx,jhaty,jhatz, M00,M01,M02,M10,M11,M12,M20,M
     assert len(jhatx) == args.Nxouter
     assert len(jhaty) == args.Nxouter
     assert len(jhatz) == args.Nxouter
-    assert M00.shape[0] == args.Nxouter
-    assert M00.shape[1] == args.Nxouter
-    assert M01.shape[0] == args.Nxouter
-    assert M01.shape[1] == args.Nxouter
-    assert M02.shape[0] == args.Nxouter
-    assert M02.shape[1] == args.Nxouter
-    assert M10.shape[0] == args.Nxouter
-    assert M10.shape[1] == args.Nxouter
-    assert M11.shape[0] == args.Nxouter
-    assert M11.shape[1] == args.Nxouter
-    assert M12.shape[0] == args.Nxouter
-    assert M12.shape[1] == args.Nxouter
-    assert M20.shape[0] == args.Nxouter
-    assert M20.shape[1] == args.Nxouter
-    assert M21.shape[0] == args.Nxouter
-    assert M21.shape[1] == args.Nxouter
-    assert M22.shape[0] == args.Nxouter
-    assert M22.shape[1] == args.Nxouter
 
     # form combined vector for fields. they have compatible units of m^1/2 l^-1/2 t^-1 in CGS
     F = np.concatenate( (Ex[Ng:-Ng],Ey[Ng:-Ng],Ez[Ng:-Ng],Bx[Ng:-Ng],By[Ng:-Ng],Bz[Ng:-Ng]) )
@@ -754,9 +853,18 @@ def maxwell(Ex,Ey,Ez, Bx,By,Bz, jhatx,jhaty,jhatz, M00,M01,M02,M10,M11,M12,M20,M
     # our right hand side has units of Gauss/(cm/s * s) = (statV/cm)/cm = m^1/2 l^-3/2 t^-1
     b = np.zeros(6*(args.Nxinner))
 
-    jx = jhatx + (M00@Ex + M01@Ey + M02@Ez)*(1.-theta)
-    jy = jhaty + (M10@Ex + M11@Ey + M12@Ez)*(1.-theta)
-    jz = jhatz + (M20@Ex + M21@Ey + M22@Ez)*(1.-theta)
+    jx = jhatx + ( \
+          matrix_times_vector(M00lines,M00columns,M00values,args.Nxouter,Ex) + \
+          matrix_times_vector(M01lines,M01columns,M01values,args.Nxouter,Ey) + \
+          matrix_times_vector(M02lines,M02columns,M02values,args.Nxouter,Ez))*(1.-theta)
+    jy = jhaty + ( \
+          matrix_times_vector(M10lines,M10columns,M10values,args.Nxouter,Ex) + \
+          matrix_times_vector(M11lines,M11columns,M11values,args.Nxouter,Ey) + \
+          matrix_times_vector(M12lines,M12columns,M12values,args.Nxouter,Ez))*(1.-theta)
+    jz = jhatz + ( \
+          matrix_times_vector(M20lines,M20columns,M20values,args.Nxouter,Ex) + \
+          matrix_times_vector(M21lines,M21columns,M21values,args.Nxouter,Ey) + \
+          matrix_times_vector(M22lines,M22columns,M22values,args.Nxouter,Ez))*(1.-theta)
 
     for m in range(0*args.Nxinner,1*args.Nxinner):
         i = m - 0*args.Nxinner
@@ -798,59 +906,12 @@ def maxwell(Ex,Ey,Ez, Bx,By,Bz, jhatx,jhaty,jhatz, M00,M01,M02,M10,M11,M12,M20,M
     # and b has units of  m^1/2 l^-3/2 t^-1
     # this implies that all entries in M should have units 1/l
     timers.tic("build_A")
-    A = np.zeros( (6*args.Nxinner,6*args.Nxinner) )
-
-    A[0*args.Nxinner:1*args.Nxinner, 0*args.Nxinner:1*args.Nxinner] -= (M00[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    A[0*args.Nxinner:1*args.Nxinner, 1*args.Nxinner:2*args.Nxinner] -= (M01[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    A[0*args.Nxinner:1*args.Nxinner, 2*args.Nxinner:3*args.Nxinner] -= (M02[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    for m in range(0*args.Nxinner,1*args.Nxinner):
-        i = m - 0*args.Nxinner
-        A[m,i] += (-1./(c*dt))
-
-    A[1*args.Nxinner:2*args.Nxinner, 0*args.Nxinner:1*args.Nxinner] -= (M10[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    A[1*args.Nxinner:2*args.Nxinner, 1*args.Nxinner:2*args.Nxinner] -= (M11[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    A[1*args.Nxinner:2*args.Nxinner, 2*args.Nxinner:3*args.Nxinner] -= (M12[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    for m in range(1*args.Nxinner,2*args.Nxinner):
-        i = m - 1*args.Nxinner
-        iprev = i-1
-        if iprev < 0:
-            iprev += args.Nxinner
-        A[m,5*args.Nxinner+i    ] += (-theta/dx  )
-        A[m,5*args.Nxinner+iprev] += ( theta/dx  )
-        A[m,  args.Nxinner+i    ] += ( -1./(c*dt))
-
-    A[2*args.Nxinner:3*args.Nxinner, 0*args.Nxinner:1*args.Nxinner] -= (M20[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    A[2*args.Nxinner:3*args.Nxinner, 1*args.Nxinner:2*args.Nxinner] -= (M21[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    A[2*args.Nxinner:3*args.Nxinner, 2*args.Nxinner:3*args.Nxinner] -= (M22[Ng:-Ng, Ng:-Ng] * 4*np.pi/c * theta)
-    for m in range(2*args.Nxinner,3*args.Nxinner):
-        i = m - 2*args.Nxinner
-        iprev = i-1
-        if iprev < 0:
-            iprev += args.Nxinner
-        A[m,4*args.Nxinner+i    ] += ( theta/dx )
-        A[m,4*args.Nxinner+iprev] += (-theta/dx )
-        A[m,2*args.Nxinner+i    ] += (-1./(c*dt))
-
-    for m in range(3*args.Nxinner,4*args.Nxinner):
-        i = m - 3*args.Nxinner
-        A[m,3*args.Nxinner+i] += (1./(c*dt))
-    for m in range(4*args.Nxinner,5*args.Nxinner):
-        i = m - 4*args.Nxinner
-        inext = i+1
-        if inext >= args.Nxinner:
-            inext -= args.Nxinner
-        A[m,2*args.Nxinner+inext] += (-theta/dx)
-        A[m,2*args.Nxinner+i    ] += ( theta/dx)
-        A[m,4*args.Nxinner+i    ] += (1./(c*dt))
-    for m in range(5*args.Nxinner,6*args.Nxinner):
-        i = m - 5*args.Nxinner
-        inext = i+1
-        if inext >= args.Nxinner:
-            inext -= args.Nxinner
-        A[m,  args.Nxinner+inext] += ( theta/dx)
-        A[m,  args.Nxinner+i    ] += (-theta/dx)
-        A[m,5*args.Nxinner+i    ] += (1./(c*dt))
-
+    Alines,Acolumns,Avalues = build_A(args.Nxinner, \
+        M00lines,M00columns,M00values, M01lines,M01columns,M01values, M02lines,M02columns,M02values, \
+        M10lines,M10columns,M10values, M11lines,M11columns,M11values, M12lines,M12columns,M12values, \
+        M20lines,M20columns,M20values, M21lines,M21columns,M21values, M22lines,M22columns,M22values, \
+        args.theta)
+    A = coo_array((Avalues, (Alines, Acolumns)), shape=(6*args.Nxinner,6*args.Nxinner)).tocsc()
     timers.toc("build_A")
 
     timers.tic("gmres")
@@ -998,6 +1059,7 @@ def save_energies(energies, t, Bx,By,Bz, Ex,Ey,Ez, species):
 
 
     timers.toc("energies")
+
 
 
 
@@ -1234,9 +1296,16 @@ for t in range(1,args.Nt+1):
     jx,jy,jz = np.zeros(args.Nxouter), np.zeros(args.Nxouter), np.zeros(args.Nxouter)
 
     # total mass matrix for all species
-    M00,M01,M02 = np.zeros( (args.Nxouter,args.Nxouter) ), np.zeros( (args.Nxouter,args.Nxouter) ), np.zeros( (args.Nxouter,args.Nxouter) )
-    M10,M11,M12 = np.zeros( (args.Nxouter,args.Nxouter) ), np.zeros( (args.Nxouter,args.Nxouter) ), np.zeros( (args.Nxouter,args.Nxouter) )
-    M20,M21,M22 = np.zeros( (args.Nxouter,args.Nxouter) ), np.zeros( (args.Nxouter,args.Nxouter) ), np.zeros( (args.Nxouter,args.Nxouter) )
+    M00lines, M00columns, M00values = np.array([]), np.array([]), np.array([])
+    M01lines, M01columns, M01values = np.array([]), np.array([]), np.array([])
+    M02lines, M02columns, M02values = np.array([]), np.array([]), np.array([])
+    M10lines, M10columns, M10values = np.array([]), np.array([]), np.array([])
+    M11lines, M11columns, M11values = np.array([]), np.array([]), np.array([])
+    M12lines, M12columns, M12values = np.array([]), np.array([]), np.array([])
+    M20lines, M20columns, M20values = np.array([]), np.array([]), np.array([])
+    M21lines, M21columns, M21values = np.array([]), np.array([]), np.array([])
+    M22lines, M22columns, M22values = np.array([]), np.array([]), np.array([])
+
     timers.toc("misc1")
 
     for s in species:
@@ -1271,7 +1340,25 @@ for t in range(1,args.Nt+1):
 
         # compute mass matrices
         timers.tic('mass_matrix')
-        naive_numba_mass_matrix(args.Nxouter, s.x, s.alpha, s.q, s.m, s.macro, M00,M01,M02,M10,M11,M12,M20,M21,M22)
+        Ms00lines,Ms00columns,Ms00values, \
+        Ms01lines,Ms01columns,Ms01values, \
+        Ms02lines,Ms02columns,Ms02values, \
+        Ms10lines,Ms10columns,Ms10values, \
+        Ms11lines,Ms11columns,Ms11values, \
+        Ms12lines,Ms12columns,Ms12values, \
+        Ms20lines,Ms20columns,Ms20values, \
+        Ms21lines,Ms21columns,Ms21values, \
+        Ms22lines,Ms22columns,Ms22values = naive_numba_mass_matrix(args.Nxouter, s.x, s.alpha, s.q, s.m, s.macro)
+
+        M00lines,M00columns,M00values = matrix_add(M00lines,M00columns,M00values, Ms00lines,Ms00columns,Ms00values)
+        M01lines,M01columns,M01values = matrix_add(M01lines,M01columns,M01values, Ms01lines,Ms01columns,Ms01values)
+        M02lines,M02columns,M02values = matrix_add(M02lines,M02columns,M02values, Ms02lines,Ms02columns,Ms02values)
+        M10lines,M10columns,M10values = matrix_add(M10lines,M10columns,M10values, Ms10lines,Ms10columns,Ms10values)
+        M11lines,M11columns,M11values = matrix_add(M11lines,M11columns,M11values, Ms11lines,Ms11columns,Ms11values)
+        M12lines,M12columns,M12values = matrix_add(M12lines,M12columns,M12values, Ms12lines,Ms12columns,Ms12values)
+        M20lines,M20columns,M20values = matrix_add(M20lines,M20columns,M20values, Ms20lines,Ms20columns,Ms20values)
+        M21lines,M21columns,M21values = matrix_add(M21lines,M21columns,M21values, Ms21lines,Ms21columns,Ms21values)
+        M22lines,M22columns,M22values = matrix_add(M22lines,M22columns,M22values, Ms22lines,Ms22columns,Ms22values)
         timers.toc('mass_matrix')
 
     # add antenna current
@@ -1291,7 +1378,11 @@ for t in range(1,args.Nt+1):
         saveh5(jz,  "/Timestep_"+str(t)+"/rho/rhoL/rhoL[3]")
 
     # update E and B from t^n to t^n+1 using j at t^n+1/2 and the implicit theta algorithm
-    newEx,newEy,newEz,newBx,newBy,newBz = maxwell(Ex,Ey,Ez, Bx,By,Bz, jx,jy,jz, M00,M01,M02,M10,M11,M12,M20,M21,M22, args.theta)
+    newEx,newEy,newEz,newBx,newBy,newBz = maxwell(Ex,Ey,Ez, Bx,By,Bz, jx,jy,jz, \
+        M00lines,M00columns,M00values, M01lines,M01columns,M01values, M02lines,M02columns,M02values, \
+        M10lines,M10columns,M10values, M11lines,M11columns,M11values, M12lines,M12columns,M12values, \
+        M20lines,M20columns,M20values, M21lines,M21columns,M21values, M22lines,M22columns,M22values, \
+        args.theta)
 
     # get electric field at t^n+1/2
     timers.tic("misc4")
